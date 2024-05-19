@@ -1,0 +1,220 @@
+CLASS lhc_connection DEFINITION INHERITING FROM cl_abap_behavior_handler.
+  PRIVATE SECTION.
+    METHODS:
+      get_global_authorizations FOR GLOBAL AUTHORIZATION
+        IMPORTING
+        REQUEST requested_authorizations FOR Connection
+        RESULT result,
+      CheckSemanticKey FOR VALIDATE ON SAVE
+        IMPORTING keys FOR Connection~CheckSemanticKey,
+      CheckCarrerID FOR VALIDATE ON SAVE
+        IMPORTING keys FOR Connection~CheckCarrerID,
+      CheckOriginDestination FOR VALIDATE ON SAVE
+        IMPORTING keys FOR Connection~CheckOriginDestination,
+      GetCities FOR DETERMINE ON SAVE
+            IMPORTING keys FOR Connection~GetCities.
+ENDCLASS.
+
+CLASS lhc_connection IMPLEMENTATION.
+  METHOD get_global_authorizations.
+  ENDMETHOD.
+  METHOD CheckSemanticKey.
+
+    DATA read_keys TYPE TABLE FOR READ IMPORT z100_r_connection.
+    DATA connections TYPE TABLE FOR READ RESULT z100_r_connection.
+
+    read_keys = CORRESPONDING #( keys ).
+
+    READ ENTITIES OF z100_r_connection IN LOCAL MODE
+    ENTITY Connection
+    FIELDS ( uuid  CarrierID ConnectionID )
+    WITH read_keys
+    RESULT connections.
+
+    SELECT FROM z100aconn
+    FIELDS uuid
+    FOR ALL ENTRIES IN @connections
+    WHERE uuid <> @connections-uuid
+    AND  carrier_id = @connections-CarrierID
+    AND  connection_id = @connections-ConnectionID
+    INTO TABLE @DATA(check_result_a).
+
+    SELECT FROM z100dconn
+    FIELDS uuid
+    FOR ALL ENTRIES IN @connections
+    WHERE uuid <> @connections-uuid
+    AND   carrierid = @connections-CarrierID
+    AND   connectionid = @connections-ConnectionID
+    INTO TABLE @DATA(check_result_d).
+
+    IF check_result_a IS NOT INITIAL OR check_result_d IS NOT INITIAL.
+      LOOP AT connections INTO DATA(connection).
+
+        DATA(message) = me->new_message(
+                          id       = 'ZCONN'
+                          number   = '001'
+                          severity = ms-error
+                          v1       = connection-CarrierID
+                          v2       = connection-ConnectionID
+*                          v3       =
+*                          v4       =
+                        ).
+
+        DATA reported_record LIKE LINE OF reported-connection.
+
+        reported_record-%tky = connection-%tky.
+        reported_record-%msg = message.
+        reported_record-%element-carrierid = if_abap_behv=>mk-on.
+        reported_record-%element-connectionid = if_abap_behv=>mk-on.
+
+        APPEND reported_record TO reported-connection.
+
+        DATA failed_record LIKE LINE OF failed-connection.
+
+        failed_record-%tky = connection-%tky.
+
+        APPEND failed_record TO failed-connection.
+
+      ENDLOOP.
+    ENDIF.
+
+
+  ENDMETHOD.
+
+  METHOD CheckCarrerID.
+
+    READ ENTITIES OF z100_r_connection IN LOCAL MODE
+    ENTITY Connection
+    FIELDS ( ConnectionID )
+    WITH CORRESPONDING #( keys )
+    RESULT DATA(connections).
+
+    IF connections IS NOT INITIAL.
+
+      SELECT FROM /DMO/I_Carrier
+      FIELDS AirlineID
+      FOR ALL ENTRIES IN @connections
+      WHERE AirlineID = @connections-CarrierID
+      INTO TABLE @DATA(i_carrierid).
+
+      LOOP AT connections INTO DATA(connection).
+
+        DATA(exists) = VALUE #( i_carrierid[ AirlineID = connection-CarrierID ] OPTIONAL ).
+
+        IF exists IS INITIAL.
+
+          DATA(mess) = me->new_message(
+                         id       = 'ZCONN'
+                         number   = '002'
+                         severity = ms-error
+                         v1       = connection-CarrierID
+*                           v2       =
+*                           v3       =
+*                           v4       =
+                       ).
+          DATA reported_records LIKE LINE OF reported-connection.
+
+          reported_records-%tky = connection-%tky.
+          reported_records-%msg = mess.
+          reported_records-%element-carrierid = if_abap_behv=>mk-on.
+
+          APPEND reported_records TO reported-connection.
+
+          DATA failed_records LIKE LINE OF failed-connection.
+
+          failed_records-%tky = connection-%tky.
+
+          APPEND failed_records TO failed-connection.
+
+        ENDIF.
+
+      ENDLOOP.
+
+    ENDIF.
+
+  ENDMETHOD.
+
+  METHOD CheckOriginDestination.
+
+    READ ENTITIES OF z100_r_connection IN LOCAL MODE
+    ENTITY Connection
+    FIELDS ( AirportFromID AirportToID )
+    WITH CORRESPONDING #( keys )
+    RESULT DATA(connections).
+
+    LOOP AT connections INTO DATA(connection).
+
+      IF connection-AirportFromID EQ connection-AirportToID.
+
+        DATA(mess) = me->new_message(
+                       id       = 'ZCONN'
+                       number   = '003'
+                       severity = ms-error
+*                         v1       =
+*                         v2       =
+*                         v3       =
+*                         v4       =
+                     ).
+
+        DATA reported_records LIKE LINE OF reported-connection.
+        DATA failed_records LIKE LINE OF failed-connection.
+
+        reported_records-%tky = connection-%tky.
+        reported_records-%msg = mess.
+        reported_records-%element-airportfromid = if_abap_behv=>mk-on.
+        reported_records-%element-airporttoid = if_abap_behv=>mk-on.
+
+        APPEND reported_records TO reported-connection.
+
+        failed_records-%tky = connection-%tky.
+        APPEND failed_records TO failed-connection.
+
+      ENDIF.
+
+    ENDLOOP.
+
+  ENDMETHOD.
+
+  METHOD GetCities.
+
+    READ ENTITIES OF z100_r_connection IN LOCAL MODE
+    ENTITY Connection
+    FIELDS ( AirportFromID AirportToID )
+    WITH CORRESPONDING #( keys )
+    RESULT DATA(connections).
+
+    LOOP AT connections INTO DATA(connection).
+
+        SELECT SINGLE FROM /DMO/I_Airport
+        FIELDS City, CountryCode
+        WHERE AirportID = @connection-AirportFromID
+        INTO ( @connection-CityFrom, @connection-CountryFrom ).
+
+        SELECT SINGLE FROM /DMO/I_Airport
+        FIELDS City, CountryCode
+        WHERE AirportID = @connection-AirportToID
+        INTO ( @connection-CityTo, @connection-CountryTo ).
+
+*        APPEND connection TO connections.
+        MODIFY connections FROM connection.
+
+    ENDLOOP.
+
+    DATA connections_upd TYPE TABLE FOR UPDATE z100_r_connection.
+
+    connections_upd = CORRESPONDING #( connections ).
+
+    MODIFY ENTITIES OF z100_r_connection IN LOCAL MODE
+    ENTITY Connection
+    UPDATE
+    FIELDS ( CityFrom CountryFrom CityTo CountryTo )
+    WITH connections_upd
+    REPORTED DATA(reported_records).
+
+    reported-connection = CORRESPONDING #( reported_records-connection ).
+
+
+
+  ENDMETHOD.
+
+ENDCLASS.
